@@ -1,83 +1,190 @@
 # openrgb-presets
 
-Linux-focused Rust CLI for discovering and controlling a Logitech G513 keyboard
-and G502 mouse through a local OpenRGB SDK server. It currently provides a
-static cyan device-group preset and a keypress-driven spatial ripple animation.
+`openrgb-presets` is a Linux-focused Rust CLI for controlling a Logitech G513
+keyboard and G502 HERO mouse through a local
+[OpenRGB](https://openrgb.org/) SDK server. It provides a static cyan preset for
+both devices and a keypress-driven cyan ripple animation for the keyboard.
+
+The project identifies hardware from OpenRGB metadata instead of relying on
+controller indexes, which may change when devices are re-enumerated.
 
 ## Features
 
-- Identifies supported devices by type, vendor, and model instead of unstable
-  OpenRGB controller indexes.
-- Applies cyan to the complete keyboard-and-mouse group only after both devices
-  have been discovered.
-- Renders concurrent keypress ripples at 30 FPS using the keyboard's physical
-  OpenRGB matrix.
-- Supports configurable ripple propagation speed.
-- Observes keyboard input without grabbing, printing, logging, or persisting
-  key events.
-- Restores static cyan when the ripple process receives `Ctrl+C`.
+- Discovers the supported keyboard and mouse by device type, vendor, and model.
+- Applies a static `#00FFFF` cyan preset only when the complete device group is
+  available.
+- Renders concurrent keypress ripples at approximately 30 FPS.
+- Uses the keyboard's physical 7x23 OpenRGB matrix rather than its linear LED
+  order.
+- Supports ripple propagation speeds from 1 through 50 matrix cells per second.
+- Observes keyboard input without grabbing the device, so normal input continues
+  to reach the desktop.
+- Keeps key events in memory only for the lifetime of each ripple; events are
+  never printed, logged, or persisted.
+- Restores static cyan after `Ctrl+C` or an animation-loop failure.
+
+## Supported Hardware
+
+The current device matching, input-device lookup, LED names, and keyboard matrix
+are intentionally specific to this hardware:
+
+| Device | OpenRGB identity | Additional identity |
+| --- | --- | --- |
+| Logitech G513 Carbon | `Logitech` / `Logitech G512 RGB` | USB ID `046d:c33c`; `/dev/input/by-id` name beginning with `usb-Logitech_G513_Carbon_` |
+| Logitech G502 HERO | `Logitech` / `G502 HERO Gaming Mouse` | OpenRGB device type `Mouse` |
+
+Other models are not currently supported, even if their physical layout is
+similar.
 
 ## Requirements
 
-- Linux with access to the G513 evdev device through the active-seat ACL or an
-  equivalent permission rule.
-- OpenRGB 1.0rc3 or another server supporting SDK protocol version 5.
-- Rust 2024 edition toolchain.
-- Logitech G513 (`046d:c33c`, reported by OpenRGB as `Logitech G512 RGB`).
-- Logitech G502 HERO mouse as reported by OpenRGB.
+- Linux
+- OpenRGB 1.0rc3 or another release supporting SDK protocol version 5
+- Rust with support for the 2024 edition
+- Read access to the G513's evdev keyboard endpoint
+- The supported G513 and G502 HERO devices for the complete static preset
 
-The current device matching and keyboard matrix are intentionally specific to
-this hardware pair.
+On a typical desktop session, logind grants the active user access to the
+keyboard's evdev endpoint through an ACL. Check the resolved device and its
+permissions if the ripple command reports `Permission denied`:
 
-## Build
+```sh
+readlink -f /dev/input/by-id/usb-Logitech_G513_Carbon_*-event-kbd
+getfacl /dev/input/eventX
+```
+
+Replace `eventX` with the event device returned by `readlink`. Prefer an
+active-seat ACL or a narrowly scoped udev rule over running the application as
+root.
+
+## Quick Start
+
+Start an OpenRGB SDK server without automatically connecting to another server:
+
+```sh
+openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect
+```
+
+In another terminal, clone, build, and run the device check:
+
+```sh
+git clone https://github.com/iyad/openrgb-presets.git
+cd openrgb-presets
+cargo build --release
+./target/release/openrgb-presets devices
+```
+
+Apply static cyan to both supported devices:
+
+```sh
+./target/release/openrgb-presets apply cyan-static
+```
+
+Or start the keyboard ripple at its default speed:
+
+```sh
+./target/release/openrgb-presets apply ripple
+```
+
+Press `Ctrl+C` to stop the ripple and restore static cyan.
+
+## Installation
+
+### Build in Place
 
 ```sh
 cargo build --release
 cargo test
 ```
 
-The release binary is written to `target/release/openrgb-presets`.
+The optimized executable is written to
+`target/release/openrgb-presets`.
 
-## Usage
+### Install with Cargo
 
-Start OpenRGB in a separate terminal:
-
-```sh
-openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect
-```
-
-Then run one of the available commands:
+From the repository root:
 
 ```sh
-cargo run -- devices
-cargo run -- apply cyan-static
-cargo run -- apply ripple
-cargo run -- apply ripple 18
+cargo install --path .
 ```
 
-Ripple speed is measured in OpenRGB keyboard-matrix cells per second. The
-default is `24`; accepted values range from `1` through `50`. The ripple command
-runs until `Ctrl+C`, then restores static cyan.
+This installs `openrgb-presets` into Cargo's binary directory, usually
+`~/.cargo/bin`. Ensure that directory is present in `PATH`.
 
-Only one lighting client should write to OpenRGB at a time. Concurrent clients
-can interleave the G513's multi-packet updates and produce mixed colors.
+## Command Reference
 
-## Ripple Algorithm
+```text
+openrgb-presets devices
+openrgb-presets apply cyan-static
+openrgb-presets apply ripple [speed]
+```
 
-Each initial keypress creates an expanding radial wave. At destination key
-`k`, ripple `i` contributes:
+### `devices`
+
+Connects to `127.0.0.1:6742`, prints the negotiated SDK protocol version, and
+reports each supported controller found. It reads metadata only and does not
+change lighting modes or colors.
+
+```sh
+openrgb-presets devices
+```
+
+### `apply cyan-static`
+
+Locates both supported devices, switches them to an OpenRGB-controllable mode,
+and sets every LED to cyan. Neither device is modified if one member of the
+device group is missing.
+
+```sh
+openrgb-presets apply cyan-static
+```
+
+### `apply ripple [speed]`
+
+Clears the keyboard, observes initial keypress events, and renders expanding
+cyan rings from the physical location of each pressed key. `speed` is optional
+and is measured in keyboard-matrix cells per second.
+
+```sh
+openrgb-presets apply ripple       # default: 24 cells/second
+openrgb-presets apply ripple 18.5  # slower propagation
+openrgb-presets apply ripple 40    # faster propagation
+```
+
+Accepted speeds range from `1` through `50`, including decimal values. The
+ripple command controls only the keyboard while running. On shutdown it changes
+the keyboard to static cyan; it does not modify the mouse.
+
+## Exit Codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Command completed successfully |
+| `1` | OpenRGB, evdev, signal, or animation error |
+| `2` | Invalid command or speed, or required hardware was not found |
+
+Diagnostics are written to standard error. Successful discovery and status
+messages are written to standard output.
+
+## How the Ripple Works
+
+Each initial keypress creates an expanding radial wave. At destination key `k`,
+ripple `i` contributes:
 
 ```text
 exp(-((distance(i, k) - speed * age(i))^2) / (2 * width^2))
     * exp(-spatial_decay * speed * age(i))
 ```
 
-This is an analytic expanding Gaussian ring. It follows the constant-speed
-wavefront and superposition ideas from the linear wave equation without the
-state and stability requirements of a finite-difference PDE solver. Active
-ripples are summed and clamped, so overlapping fronts combine constructively.
-Real elapsed time controls radius, keeping animation speed stable if a frame is
-late.
+This is an analytic expanding Gaussian ring. Its radius advances according to
+real elapsed time, so propagation speed remains stable when a frame is late.
+The renderer samples the ring at every key in OpenRGB's G810-family 7x23 matrix,
+sums overlapping ripple intensities, clamps the result, and writes cyan channel
+values to the keyboard.
+
+The approach captures constant-speed wavefront propagation and superposition
+without the state or numerical stability requirements of a finite-difference
+wave-equation solver.
 
 References:
 
@@ -86,18 +193,83 @@ References:
 - [Gaussian function](https://mathworld.wolfram.com/GaussianFunction.html)
 - [Distance fields and smooth radial contours](https://thebookofshaders.com/07/)
 
-The renderer uses OpenRGB's 7x23 G810-family matrix for the G512/G513 rather
-than treating controller LED indexes as physical positions.
-
 ## Input Privacy
 
-Ripple observes the G513's main evdev endpoint without grabbing it, so normal
-keyboard input continues to reach the desktop. Only initial press events are
-converted into short-lived in-memory ripple origins. Key events are not printed,
-logged, or persisted.
+The ripple process opens the G513's primary evdev keyboard endpoint for reading
+but does not grab it. Normal keyboard input therefore continues to reach the
+desktop and other applications. Only initial press events are mapped to
+short-lived in-memory ripple origins. The program does not print, log, transmit,
+or persist key events.
 
-## Project Status
+Because evdev access exposes raw keyboard input to a process, inspect the source
+and use normal user permissions rather than elevated privileges.
 
-This is an early hardware-specific implementation. Presets are currently
-compiled into the binary; TOML configuration, service integration, additional
-device groups, and spatial mouse placement are planned but not implemented.
+## Architecture
+
+- `src/main.rs` implements argument parsing, OpenRGB device discovery, static
+  preset application, and hardware identity matching.
+- `src/ripple.rs` implements evdev discovery, key-to-LED mapping, physical matrix
+  coordinates, ripple simulation, rendering, and shutdown restoration.
+- `openrgb2` handles the OpenRGB SDK protocol.
+- `evdev` provides asynchronous Linux input events.
+- `tokio` drives OpenRGB I/O, keyboard events, frame timing, and `Ctrl+C`
+  concurrently.
+
+## Troubleshooting
+
+### OpenRGB connection fails
+
+Confirm that the SDK server is running locally on its default endpoint,
+`127.0.0.1:6742`, and that another OpenRGB server is not already using the port.
+The server address is currently compiled into the OpenRGB client default and is
+not configurable from the CLI.
+
+### A device is not found
+
+Run `openrgb-presets devices` and compare the reported hardware in OpenRGB with
+the identities in [Supported Hardware](#supported-hardware). OpenRGB must detect
+the device using the exact model identity expected by this application.
+
+### The ripple cannot open the keyboard
+
+Check that `/dev/input/by-id` contains a matching G513 `event-kbd` symlink and
+that the current user can read its target. The code deliberately ignores the
+G513 `if01` keyboard endpoint and uses the primary endpoint.
+
+### Colors flicker or appear mixed
+
+Only one lighting client should write to OpenRGB at a time. Concurrent clients
+can interleave the G513's multi-packet updates and produce mixed colors. Stop
+other effects, plugins, and SDK clients before running a preset.
+
+## Limitations and Roadmap
+
+This is an early, hardware-specific implementation. Current limitations include:
+
+- Presets and colors are compiled into the binary.
+- The OpenRGB host and port are not configurable.
+- There is no background service or desktop-session integration.
+- The ripple is keyboard-only and does not model the mouse's physical position.
+- Hardware matching and evdev discovery support only the listed Logitech models.
+
+Potential future work includes TOML configuration, additional device groups,
+custom colors, configurable server endpoints, service integration, and spatial
+effects spanning multiple devices.
+
+## Development
+
+Before submitting changes, run:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+Unit tests cover device matching, speed validation, matrix completeness,
+keypress-to-LED mapping, wavefront motion, and overlapping-ripple behavior.
+
+## License
+
+No license has been selected yet. Until one is added, the source remains under
+the copyright holder's default rights.
