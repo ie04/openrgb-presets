@@ -6,6 +6,7 @@ After=graphical-session-pre.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/openrgb-presets
+KillMode=mixed
 Restart=on-failure
 RestartSec=3
 
