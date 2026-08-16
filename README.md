@@ -111,6 +111,30 @@ cargo install --path .
 This installs `openrgb-presets` into Cargo's binary directory, usually
 `~/.cargo/bin`. Ensure that directory is present in `PATH`.
 
+### Arch Linux Package
+
+Arch Linux users can install the VCS package from the AUR:
+
+```sh
+yay -S openrgb-presets-git
+```
+
+The package builds the latest commit from the `main` branch and installs the
+binary as `/usr/bin/openrgb-presets`. Its version includes the upstream Cargo
+version, Git commit count, and abbreviated commit hash.
+
+Enable development-package checks once so `yay` compares the installed commit
+with the current upstream commit during every system upgrade:
+
+```sh
+yay -Y --devel --save
+```
+
+After that, use `yay` or `yay -Syu` for system upgrades. When GitHub's `main`
+branch advances, `yay` will offer to rebuild and install the package at the new
+commit. Plain `pacman -Syu` updates repository packages only and cannot discover
+new commits for an AUR VCS package.
+
 ## Command Reference
 
 ```text
@@ -271,5 +295,4 @@ keypress-to-LED mapping, wavefront motion, and overlapping-ripple behavior.
 
 ## License
 
-No license has been selected yet. Until one is added, the source remains under
-the copyright holder's default rights.
+Copyright (c) 2026 ie04. All rights reserved. See [LICENSE](LICENSE).
