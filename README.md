@@ -68,7 +68,7 @@ openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect
 In another terminal, clone, build, and run the device check:
 
 ```sh
-git clone https://github.com/iyad/openrgb-presets.git
+git clone https://github.com/ie04/openrgb-presets.git
 cd openrgb-presets
 cargo build --release
 ./target/release/openrgb-presets devices
