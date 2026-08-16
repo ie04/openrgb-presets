@@ -17,6 +17,9 @@ controller indexes, which may change when devices are re-enumerated.
 - Uses the keyboard's physical 7x23 OpenRGB matrix rather than its linear LED
   order.
 - Supports ripple propagation speeds from 1 through 50 matrix cells per second.
+- Uses ripple as the default when no preset argument is supplied.
+- Runs as a systemd user service and attempts to make the OpenRGB SDK server
+  available automatically.
 - Observes keyboard input without grabbing the device, so normal input continues
   to reach the desktop.
 - Keeps key events in memory only for the lifetime of each ripple; events are
@@ -39,7 +42,8 @@ similar.
 ## Requirements
 
 - Linux
-- OpenRGB 1.0rc3 or another release supporting SDK protocol version 5
+- OpenRGB 1.0rc3 or another release supporting SDK protocol version 5, including
+  the `openrgb` executable
 - Rust with support for the 2024 edition
 - Read access to the G513's evdev keyboard endpoint
 - The supported G513 and G502 HERO devices for the complete static preset
@@ -59,18 +63,22 @@ root.
 
 ## Quick Start
 
-Start an OpenRGB SDK server without automatically connecting to another server:
-
-```sh
-openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect
-```
-
-In another terminal, clone, build, and run the device check:
+Clone, build, and start the default ripple preset:
 
 ```sh
 git clone https://github.com/ie04/openrgb-presets.git
 cd openrgb-presets
 cargo build --release
+./target/release/openrgb-presets
+```
+
+The application uses an existing SDK server on `127.0.0.1:6742` when one is
+available. Otherwise, it attempts to start the packaged `openrgb.service` and
+falls back to launching a user-scoped OpenRGB server.
+
+Run the device check with:
+
+```sh
 ./target/release/openrgb-presets devices
 ```
 
@@ -80,7 +88,7 @@ Apply static cyan to both supported devices:
 ./target/release/openrgb-presets apply cyan-static
 ```
 
-Or start the keyboard ripple at its default speed:
+The explicit form of the default preset is:
 
 ```sh
 ./target/release/openrgb-presets apply ripple
@@ -113,15 +121,20 @@ This installs `openrgb-presets` into Cargo's binary directory, usually
 
 ### Arch Linux Package
 
-Arch Linux users can install the VCS package from the AUR:
+Arch Linux users can build and install the VCS package from this repository:
 
 ```sh
-yay -S openrgb-presets-git
+makepkg -si
 ```
 
 The package builds the latest commit from the `main` branch and installs the
-binary as `/usr/bin/openrgb-presets`. Its version includes the upstream Cargo
-version, Git commit count, and abbreviated commit hash.
+binary as `/usr/bin/openrgb-presets` together with a systemd user unit. Its
+version includes the upstream Cargo version, Git commit count, and abbreviated
+commit hash.
+
+The `openrgb-presets-git` AUR submission is pending. Once it is published,
+install it through `yay` and enable development-package checks so new upstream
+commits are detected during system upgrades:
 
 Enable development-package checks once so `yay` compares the installed commit
 with the current upstream commit during every system upgrade:
@@ -135,13 +148,69 @@ branch advances, `yay` will offer to rebuild and install the package at the new
 commit. Plain `pacman -Syu` updates repository packages only and cannot discover
 new commits for an AUR VCS package.
 
+## Background Service
+
+The Arch package installs `openrgb-presets.service` as a systemd user service.
+Enable it for the current user and start it immediately:
+
+```sh
+systemctl --user enable --now openrgb-presets.service
+```
+
+The service starts `openrgb-presets` without arguments, so ripple runs at the
+default speed of 24 cells per second. Check its status and logs with:
+
+```sh
+systemctl --user status openrgb-presets.service
+journalctl --user -u openrgb-presets.service
+```
+
+Stop or disable it with:
+
+```sh
+systemctl --user disable --now openrgb-presets.service
+```
+
+To select a different preset or ripple speed, create a user override with
+`systemctl --user edit openrgb-presets.service`:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/openrgb-presets ripple 18
+```
+
+Run `systemctl --user daemon-reload` and restart the service after changing the
+override. `cyan-static` can replace `ripple 18`; it applies the static preset and
+then exits successfully because it does not need a continuous renderer.
+
+### OpenRGB Server Startup
+
+Before applying a preset, the application follows this sequence:
+
+1. Reuse any process listening on the local OpenRGB SDK endpoint.
+2. Attempt `systemctl --no-ask-password start openrgb.service`.
+3. If the system service cannot be activated, start `openrgb --server` as a
+   user-scoped child process and wait up to 10 seconds for the SDK endpoint.
+
+The fallback server remains in the same systemd cgroup as the preset service and
+is stopped with it. For direct CLI invocations, a fallback server started by the
+application is stopped when the command exits. An independently running SDK
+server or successfully activated system service is left running.
+
 ## Command Reference
 
 ```text
+openrgb-presets
+openrgb-presets ripple [speed]
+openrgb-presets cyan-static
 openrgb-presets devices
 openrgb-presets apply cyan-static
 openrgb-presets apply ripple [speed]
 ```
+
+Running `openrgb-presets` without arguments is equivalent to
+`openrgb-presets ripple`.
 
 ### `devices`
 
@@ -161,6 +230,7 @@ device group is missing.
 
 ```sh
 openrgb-presets apply cyan-static
+openrgb-presets cyan-static
 ```
 
 ### `apply ripple [speed]`
@@ -170,6 +240,9 @@ cyan rings from the physical location of each pressed key. `speed` is optional
 and is measured in keyboard-matrix cells per second.
 
 ```sh
+openrgb-presets                    # default: 24 cells/second
+openrgb-presets ripple             # explicit default
+openrgb-presets ripple 18.5        # concise custom speed
 openrgb-presets apply ripple       # default: 24 cells/second
 openrgb-presets apply ripple 18.5  # slower propagation
 openrgb-presets apply ripple 40    # faster propagation
@@ -243,10 +316,11 @@ and use normal user permissions rather than elevated privileges.
 
 ### OpenRGB connection fails
 
-Confirm that the SDK server is running locally on its default endpoint,
-`127.0.0.1:6742`, and that another OpenRGB server is not already using the port.
-The server address is currently compiled into the OpenRGB client default and is
-not configurable from the CLI.
+Inspect `systemctl status openrgb.service` and the user-service journal. The
+application normally starts a missing server automatically, but activation can
+still fail if the `openrgb` executable is absent, OpenRGB exits during hardware
+discovery, or another process occupies `127.0.0.1:6742`. The endpoint is not
+currently configurable from the CLI.
 
 ### A device is not found
 
@@ -272,13 +346,13 @@ This is an early, hardware-specific implementation. Current limitations include:
 
 - Presets and colors are compiled into the binary.
 - The OpenRGB host and port are not configurable.
-- There is no background service or desktop-session integration.
+- The user service is packaged only for systemd-based Linux systems.
 - The ripple is keyboard-only and does not model the mouse's physical position.
 - Hardware matching and evdev discovery support only the listed Logitech models.
 
 Potential future work includes TOML configuration, additional device groups,
-custom colors, configurable server endpoints, service integration, and spatial
-effects spanning multiple devices.
+custom colors, configurable server endpoints, and spatial effects spanning
+multiple devices.
 
 ## Development
 

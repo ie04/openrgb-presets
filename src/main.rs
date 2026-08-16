@@ -7,7 +7,14 @@ mod ripple;
 
 // `env` provides access to command-line arguments. `ExitCode` lets `main`
 // explicitly tell the shell whether the command succeeded or failed.
-use std::{env, process::ExitCode};
+use std::{
+    env,
+    error::Error,
+    io,
+    net::{Ipv4Addr, SocketAddrV4, TcpStream},
+    process::{Child, Command, ExitCode, Stdio},
+    time::{Duration, Instant},
+};
 
 // `Color` stores red, green, and blue intensity values.
 // `DeviceType` describes categories such as keyboards and mice.
@@ -22,6 +29,25 @@ const CYAN: Color = Color {
     b: 255,
 };
 
+const OPENRGB_START_TIMEOUT: Duration = Duration::from_secs(10);
+const OPENRGB_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+const OPENRGB_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 6742);
+
+enum Action {
+    Devices,
+    CyanStatic,
+    Ripple(f32),
+}
+
+struct ManagedServer(Child);
+
+impl Drop for ManagedServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 // OpenRGB communication is asynchronous. This attribute creates a Tokio
 // runtime so `main` can be async and use `.await` for network operations.
 #[tokio::main]
@@ -30,8 +56,27 @@ async fn main() -> ExitCode {
     // user-supplied arguments.
     let args: Vec<String> = env::args().skip(1).collect();
 
-    match args.as_slice() {
-        [command] if command == "devices" => {
+    let action = match parse_action(&args) {
+        Ok(action) => action,
+        Err(error) => {
+            if !error.is_empty() {
+                eprintln!("{error}");
+            }
+            print_usage();
+            return ExitCode::from(2);
+        }
+    };
+
+    let _managed_server = match ensure_openrgb_server().await {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("could not start OpenRGB server: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match action {
+        Action::Devices => {
             // Keep OpenRGB errors inside `find_devices` as `OpenRgbResult`, then
             // map each possible outcome to a process exit status.
             match find_devices().await {
@@ -61,46 +106,136 @@ async fn main() -> ExitCode {
             }
         }
 
-        [command, preset] if command == "apply" && preset == "cyan-static" => {
-            match apply_cyan_static().await {
-                Ok((true, true)) => {
-                    println!("applied cyan-static");
-                    ExitCode::SUCCESS
-                }
-                Ok((keyboard_found, mouse_found)) => {
-                    if !keyboard_found {
-                        eprintln!("keyboard not found");
-                    }
-
-                    if !mouse_found {
-                        eprintln!("mouse not found");
-                    }
-
-                    ExitCode::from(2)
-                }
-                Err(error) => {
-                    eprintln!("OpenRGB error: {error}");
-                    ExitCode::FAILURE
-                }
+        Action::CyanStatic => match apply_cyan_static().await {
+            Ok((true, true)) => {
+                println!("applied cyan-static");
+                ExitCode::SUCCESS
             }
+            Ok((keyboard_found, mouse_found)) => {
+                if !keyboard_found {
+                    eprintln!("keyboard not found");
+                }
+
+                if !mouse_found {
+                    eprintln!("mouse not found");
+                }
+
+                ExitCode::from(2)
+            }
+            Err(error) => {
+                eprintln!("OpenRGB error: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Action::Ripple(speed) => run_ripple(speed).await,
+    }
+}
+
+fn parse_action(args: &[String]) -> Result<Action, String> {
+    match args {
+        [] => Ok(Action::Ripple(ripple::DEFAULT_SPEED)),
+        [preset] if preset == "ripple" => Ok(Action::Ripple(ripple::DEFAULT_SPEED)),
+        [preset, speed] if preset == "ripple" => parse_ripple_speed(speed).map(Action::Ripple),
+        [preset] if preset == "cyan-static" => Ok(Action::CyanStatic),
+        [command] if command == "devices" => Ok(Action::Devices),
+        [command, preset] if command == "apply" && preset == "cyan-static" => {
+            Ok(Action::CyanStatic)
         }
         [command, preset] if command == "apply" && preset == "ripple" => {
-            run_ripple(ripple::DEFAULT_SPEED).await
+            Ok(Action::Ripple(ripple::DEFAULT_SPEED))
         }
         [command, preset, speed] if command == "apply" && preset == "ripple" => {
-            match parse_ripple_speed(speed) {
-                Ok(speed) => run_ripple(speed).await,
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::from(2)
+            parse_ripple_speed(speed).map(Action::Ripple)
+        }
+        _ => Err(String::new()),
+    }
+}
+
+async fn ensure_openrgb_server() -> Result<Option<ManagedServer>, Box<dyn Error>> {
+    if openrgb_server_is_reachable() {
+        return Ok(None);
+    }
+
+    let service_started = Command::new("systemctl")
+        .args(["--no-ask-password", "start", "openrgb.service"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+
+    if service_started && wait_for_openrgb(OPENRGB_START_TIMEOUT).await {
+        println!("started OpenRGB system service");
+        return Ok(None);
+    }
+
+    let child = Command::new("openrgb")
+        .args([
+            "--server",
+            "--server-host",
+            "127.0.0.1",
+            "--server-port",
+            "6742",
+            "--noautoconnect",
+        ])
+        .spawn()
+        .map_err(|error| io::Error::new(error.kind(), format!("failed to run openrgb: {error}")))?;
+    let mut server = ManagedServer(child);
+
+    if wait_for_openrgb(OPENRGB_START_TIMEOUT).await {
+        println!("started user OpenRGB server");
+        return Ok(Some(server));
+    }
+
+    if let Some(status) = server.0.try_wait()? {
+        return Err(io::Error::other(format!(
+            "openrgb exited before its SDK server was ready: {status}"
+        ))
+        .into());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "OpenRGB SDK server did not become ready on 127.0.0.1:6742",
+    )
+    .into())
+}
+
+async fn wait_for_openrgb(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Ok(mut client) = OpenRgbClient::connect().await
+            && client.set_name("openrgb-presets startup").await.is_ok()
+        {
+            loop {
+                if let Ok(controllers) = client.get_all_controllers().await
+                    && controllers.iter().any(|controller| {
+                        is_target_keyboard(
+                            controller.device_type(),
+                            controller.vendor(),
+                            controller.name(),
+                        )
+                    })
+                {
+                    return true;
                 }
+
+                if Instant::now() >= deadline {
+                    return true;
+                }
+                tokio::time::sleep(OPENRGB_RETRY_INTERVAL).await;
             }
         }
-        _ => {
-            print_usage();
-            ExitCode::from(2)
+
+        if Instant::now() >= deadline {
+            return false;
         }
+        tokio::time::sleep(OPENRGB_RETRY_INTERVAL).await;
     }
+}
+
+fn openrgb_server_is_reachable() -> bool {
+    TcpStream::connect_timeout(&OPENRGB_ADDRESS.into(), OPENRGB_RETRY_INTERVAL).is_ok()
 }
 
 async fn run_ripple(speed: f32) -> ExitCode {
@@ -141,7 +276,9 @@ fn parse_ripple_speed(value: &str) -> Result<f32, String> {
 }
 
 fn print_usage() {
-    eprintln!("usage: openrgb-presets devices");
+    eprintln!("usage: openrgb-presets [ripple [speed] | cyan-static | devices]");
+    eprintln!("       openrgb-presets");
+    eprintln!("       openrgb-presets devices");
     eprintln!("       openrgb-presets apply cyan-static");
     eprintln!("       openrgb-presets apply ripple [speed]");
 }
@@ -319,6 +456,26 @@ mod tests {
     #[test]
     fn parses_valid_ripple_speed() {
         assert_eq!(parse_ripple_speed("18.5"), Ok(18.5));
+    }
+
+    #[test]
+    fn defaults_to_ripple() {
+        assert!(matches!(
+            parse_action(&[]),
+            Ok(Action::Ripple(speed)) if speed == ripple::DEFAULT_SPEED
+        ));
+    }
+
+    #[test]
+    fn accepts_short_preset_arguments() {
+        assert!(matches!(
+            parse_action(&["cyan-static".to_owned()]),
+            Ok(Action::CyanStatic)
+        ));
+        assert!(matches!(
+            parse_action(&["ripple".to_owned(), "18".to_owned()]),
+            Ok(Action::Ripple(18.0))
+        ));
     }
 
     #[test]

@@ -119,6 +119,7 @@ pub async fn apply(speed: f32) -> RippleResult<bool> {
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     println!(
         "running ripple at {speed:.1} cells/second from {}; press Ctrl+C to stop",
@@ -159,6 +160,7 @@ pub async fn apply(speed: f32) -> RippleResult<bool> {
                     result?;
                     break;
                 }
+                _ = terminate.recv() => break,
             }
         }
 

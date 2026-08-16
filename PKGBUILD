@@ -4,11 +4,11 @@ pkgname=openrgb-presets-git
 _pkgname=${pkgname%-git}
 pkgver=0.1.0.r4.g8359bce
 pkgrel=1
-pkgdesc='OpenRGB presets and keypress ripple effects for Logitech G513 and G502 HERO devices'
+pkgdesc='OpenRGB background presets and keypress ripple effects for Logitech G513 and G502 HERO devices'
 arch=('x86_64')
 url='https://github.com/ie04/openrgb-presets'
 license=('LicenseRef-All-rights-reserved')
-depends=('gcc-libs' 'glibc')
+depends=('gcc-libs' 'glibc' 'openrgb')
 makedepends=('cargo' 'git')
 provides=("${_pkgname}")
 conflicts=("${_pkgname}")
@@ -52,6 +52,8 @@ package() {
     "${pkgdir}/usr/bin/openrgb-presets"
   install -Dm644 README.md \
     "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 openrgb-presets.service \
+    "${pkgdir}/usr/lib/systemd/user/openrgb-presets.service"
   install -Dm644 LICENSE \
     "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }
