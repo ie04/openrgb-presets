@@ -2,7 +2,7 @@
 
 pkgname=openrgb-presets-git
 _pkgname=${pkgname%-git}
-pkgver=0.1.0.r3.g4120e92
+pkgver=0.1.0.r4.g8359bce
 pkgrel=1
 pkgdesc='OpenRGB presets and keypress ripple effects for Logitech G513 and G502 HERO devices'
 arch=('x86_64')
@@ -33,6 +33,7 @@ prepare() {
 
 build() {
   cd "${_pkgname}"
+  export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${srcdir}=/"
   CARGO_HOME="${srcdir}/cargo-home" \
     CARGO_TARGET_DIR=target \
     cargo build --frozen --release

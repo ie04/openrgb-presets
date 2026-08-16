@@ -1,6 +1,6 @@
 pkgbase = openrgb-presets-git
 	pkgdesc = OpenRGB presets and keypress ripple effects for Logitech G513 and G502 HERO devices
-	pkgver = 0.1.0.r3.g4120e92
+	pkgver = 0.1.0.r4.g8359bce
 	pkgrel = 1
 	url = https://github.com/ie04/openrgb-presets
 	arch = x86_64
