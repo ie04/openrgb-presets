@@ -177,6 +177,7 @@ async fn ensure_openrgb_server() -> Result<Option<ManagedServer>, Box<dyn Error>
             "6742",
             "--noautoconnect",
         ])
+        .stdout(Stdio::null())
         .spawn()
         .map_err(|error| io::Error::new(error.kind(), format!("failed to run openrgb: {error}")))?;
     let mut server = ManagedServer(child);
@@ -204,34 +205,35 @@ async fn wait_for_openrgb(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
 
     loop {
-        if let Ok(mut client) = OpenRgbClient::connect().await
-            && client.set_name("openrgb-presets startup").await.is_ok()
-        {
-            loop {
-                if let Ok(controllers) = client.get_all_controllers().await
-                    && controllers.iter().any(|controller| {
-                        is_target_keyboard(
-                            controller.device_type(),
-                            controller.vendor(),
-                            controller.name(),
-                        )
-                    })
-                {
-                    return true;
-                }
-
-                if Instant::now() >= deadline {
-                    return true;
-                }
-                tokio::time::sleep(OPENRGB_RETRY_INTERVAL).await;
-            }
+        if openrgb_has_target_keyboard().await {
+            return true;
         }
 
         if Instant::now() >= deadline {
-            return false;
+            return openrgb_server_is_reachable();
         }
         tokio::time::sleep(OPENRGB_RETRY_INTERVAL).await;
     }
+}
+
+async fn openrgb_has_target_keyboard() -> bool {
+    let Ok(mut client) = OpenRgbClient::connect().await else {
+        return false;
+    };
+    if client.set_name("openrgb-presets startup").await.is_err() {
+        return false;
+    }
+    let Ok(controllers) = client.get_all_controllers().await else {
+        return false;
+    };
+
+    controllers.iter().any(|controller| {
+        is_target_keyboard(
+            controller.device_type(),
+            controller.vendor(),
+            controller.name(),
+        )
+    })
 }
 
 fn openrgb_server_is_reachable() -> bool {
